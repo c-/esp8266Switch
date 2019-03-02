@@ -1,13 +1,16 @@
 #include <Bounce2.h>
 #include <Homie.h>
 #include <Button.h>
+#include <Wire.h>
 
 const int PIN_RELAY = 15;
 const int PIN_LED = 2;
 const int PIN_BUTTON = 13;
 
-// WiOn 50055 with dual USB and backlights
-const int PIN_BACKLIGHT = 14;
+// WiOn 50055 with dual USB, backlight, power monitoring
+#define PIN_BACKLIGHT 14
+#define PIN_SDA 12
+#define PIN_SCK 0
 
 HomieNode switchNode("plug", "switch");
 Button button1(PIN_BUTTON);
@@ -59,16 +62,78 @@ bool backlightOnHandler(HomieRange range, String value) {
 }
 #endif
 
+#ifdef PIN_SDA
+const int DEFAULT_WATTS_INTERVAL = 30;
+
+unsigned long lastWattsSent = 0;
+unsigned long lastWatts = 0;
+
+HomieNode wattsNode("watts", "watts");
+
+HomieSetting<long> wattsIntervalSetting("wattsInterval",
+	"The current measurement interval in seconds");
+
+static void setupHandler() {
+  wattsNode.setProperty("unit").send("watts");
+}
+
+static unsigned long readWatts() {
+	byte d[16],count = 0;
+
+	// Request 16 bytes
+	Wire.requestFrom(0, 16);
+
+	while(count<16) {
+		if (Wire.available()) d[count++]=Wire.read();
+		else yield();
+	}
+
+	unsigned long value=(d[0]<<24) + (d[1]<<16) + (d[2]<<8) + d[3];
+	return (value/(400-(value/1800)));
+}
+
+static void loopHandler() {
+  if (millis() - lastWattsSent >= wattsIntervalSetting.get() * 1000UL
+  	|| lastWattsSent == 0
+  ) {
+    unsigned long watts = readWatts();
+	 if( watts != lastWatts ) {
+		 Homie.getLogger() << "Watts: " << watts << " e" << endl;
+		 wattsNode.setProperty("watts").send(String(watts));
+		 lastWattsSent = millis();
+		 lastWatts = watts;
+	 }
+  }
+}
+
+#endif
+
 void setup() {
   Serial.begin(115200);
   Serial.println("ecoplug booting");
   Serial.println();
   pinMode(PIN_BUTTON,INPUT_PULLUP);
   pinMode(PIN_RELAY, OUTPUT);
+#ifdef PIN_SDA
+  pinMode(PIN_SDA, INPUT_PULLUP);
+  Wire.begin(PIN_SDA, PIN_SCK);
+#endif
 
   Homie.setLedPin(PIN_LED, LOW);
   Homie.setResetTrigger(PIN_BUTTON, LOW, 5000);
   Homie_setFirmware("ecoplug", "1.0.1");
+
+#ifdef PIN_SDA
+  Homie.setSetupFunction(setupHandler).setLoopFunction(loopHandler);
+
+  wattsNode.advertise("unit");
+  wattsNode.advertise("watts");
+
+  wattsIntervalSetting.setDefaultValue(DEFAULT_WATTS_INTERVAL).setValidator([] (long candidate) {
+    return candidate > 0;
+  });
+#endif
+
   switchNode.advertise("on").settable(lightOnHandler);
 
 #ifdef PIN_BACKLIGHT
