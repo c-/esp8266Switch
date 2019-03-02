@@ -17,27 +17,6 @@ Button button1(PIN_BUTTON);
 
 HomieSetting<bool> poweronState("plugon", "Default poweron state");
 
-static void setRelay(int state) {
-  digitalWrite(PIN_RELAY, state ? HIGH : LOW);
-  switchNode.setProperty("on").send(state ? "true" : "false");
-  Serial.print("Plug is ");
-  Serial.println(state ? "on" : "off");
-}
-
-bool lightOnHandler(HomieRange range, String value) {
-  if (value == "true") {
-    setRelay(1);
-  } else if (value == "false") {
-    setRelay(0);
-  } else {
-    Serial.print("Error Got: ");
-    Serial.println(value);
-    return false;
-  }
-
-  return true;
-}
-
 #ifdef PIN_BACKLIGHT
 HomieNode lightNode("backlight", "switch");
 static void setBacklight(int state) {
@@ -63,10 +42,7 @@ bool backlightOnHandler(HomieRange range, String value) {
 #endif
 
 #ifdef PIN_SDA
-const int DEFAULT_WATTS_INTERVAL = 30;
-
-unsigned long lastWattsSent = 0;
-unsigned long lastWatts = 0;
+const int DEFAULT_WATTS_INTERVAL = 15;
 
 HomieNode wattsNode("watts", "watts");
 
@@ -77,36 +53,59 @@ static void setupHandler() {
   wattsNode.setProperty("unit").send("watts");
 }
 
-static unsigned long readWatts() {
-	byte d[16],count = 0;
-
-	// Request 16 bytes
-	Wire.requestFrom(0, 16);
-
-	while(count<16) {
-		if (Wire.available()) d[count++]=Wire.read();
-		else yield();
-	}
-
-	unsigned long value=(d[0]<<24) + (d[1]<<16) + (d[2]<<8) + d[3];
-	return (value/(400-(value/1800)));
-}
-
 static void loopHandler() {
-  if (millis() - lastWattsSent >= wattsIntervalSetting.get() * 1000UL
+  static unsigned long lastWattsSent = 0;
+  static unsigned long lastWatts = 0;
+  static byte d[16],count = 0;
+  static int reading = 0;
+
+  if( reading ) {
+    while( Wire.available() && count<16 ) {
+      d[count++] = Wire.read();
+    }
+    if( count == 16 ) {
+      unsigned long value=(d[0]<<24) + (d[1]<<16) + (d[2]<<8) + d[3];
+      unsigned long watts = (value/(400-(value/1800)));
+
+      if( watts != lastWatts ) {
+        Homie.getLogger() << "Watts: " << watts << " e" << endl;
+        wattsNode.setProperty("watts").send(String(watts));
+        lastWatts = watts;
+      }
+      reading = 0;
+      lastWattsSent = millis();
+    }
+  } else if (millis() - lastWattsSent >= wattsIntervalSetting.get() * 1000UL
   	|| lastWattsSent == 0
   ) {
-    unsigned long watts = readWatts();
-	 if( watts != lastWatts ) {
-		 Homie.getLogger() << "Watts: " << watts << " e" << endl;
-		 wattsNode.setProperty("watts").send(String(watts));
-		 lastWattsSent = millis();
-		 lastWatts = watts;
-	 }
+    count = 0;
+    Wire.requestFrom(0, 16);
+    reading = 1;
   }
 }
 
 #endif
+
+static void setRelay(int state) {
+  digitalWrite(PIN_RELAY, state ? HIGH : LOW);
+  switchNode.setProperty("on").send(state ? "true" : "false");
+  Serial.print("Plug is ");
+  Serial.println(state ? "on" : "off");
+}
+
+bool lightOnHandler(HomieRange range, String value) {
+  if (value == "true") {
+    setRelay(1);
+  } else if (value == "false") {
+    setRelay(0);
+  } else {
+    Serial.print("Error Got: ");
+    Serial.println(value);
+    return false;
+  }
+
+  return true;
+}
 
 void setup() {
   Serial.begin(115200);
